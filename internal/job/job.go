@@ -29,7 +29,8 @@ func Loop(ctx context.Context, j Job) error {
 	defer ticker.Stop()
 
 	for {
-		if err := j.Run(ctx); err != nil {
+		err := j.Run(ctx)
+		if err != nil {
 			slog.Error("Job pass failed", "job", j.Name(), "error", err)
 		}
 
