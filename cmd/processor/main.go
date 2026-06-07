@@ -56,7 +56,7 @@ func main() {
 		estimators.NewUserFlip(colls, cfg.UserFlipInterval, 2*time.Minute),
 		estimators.NewParticipation(colls, cfg.ParticipationInterval, 6*time.Minute),
 		// Battle, cases, dismantle reports.
-		reports.NewBattleDamage(colls, cfg.BattleDamageInterval, 30*time.Second),
+		reports.NewBattleDamage(colls, cfg.BattleDamageInterval, 30*time.Second, cfg.WorkerPoolSize),
 		reports.NewCases(colls, cfg.CasesInterval, 7*time.Minute),
 		reports.NewDismantle(colls, cfg.DismantleInterval, 8*time.Minute),
 		// Hourly/daily heavy reports.
@@ -69,6 +69,17 @@ func main() {
 	for _, j := range jobs {
 		g.Go(func() error { return job.Loop(gctx, j) })
 	}
+
+	// One-shot recovery sweep: fill in reports for ended battles that aged out
+	// of the live reportable window. A backfill failure must not stop the jobs.
+	backfill := reports.NewBattleDamage(colls, cfg.BattleDamageInterval, 0, cfg.WorkerPoolSize)
+	g.Go(func() error {
+		err := backfill.Backfill(gctx)
+		if err != nil && !errors.Is(err, context.Canceled) {
+			slog.Error("Battle damage backfill failed", "error", err)
+		}
+		return nil
+	})
 
 	err = g.Wait()
 	if err != nil && !errors.Is(err, context.Canceled) {

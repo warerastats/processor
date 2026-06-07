@@ -10,6 +10,7 @@ import (
 	"github.com/warerastats/models/models/stores/trackers"
 	"github.com/warerastats/processor/internal/pricing"
 	"go.mongodb.org/mongo-driver/v2/bson"
+	"golang.org/x/sync/errgroup"
 )
 
 // battleInterval is the reporting bucket width within a battle.
@@ -20,11 +21,12 @@ type BattleDamage struct {
 	Colls    *models.Collections
 	interval time.Duration
 	offset   time.Duration
+	workers  int
 }
 
 // NewBattleDamage builds the per-battle damage report job.
-func NewBattleDamage(colls *models.Collections, interval, offset time.Duration) *BattleDamage {
-	return &BattleDamage{Colls: colls, interval: interval, offset: offset}
+func NewBattleDamage(colls *models.Collections, interval, offset time.Duration, workers int) *BattleDamage {
+	return &BattleDamage{Colls: colls, interval: interval, offset: offset, workers: workers}
 }
 
 func (j *BattleDamage) Name() string            { return "battle_damage_reports" }
@@ -46,6 +48,55 @@ func (j *BattleDamage) Run(ctx context.Context) error {
 			slog.Error("Failed battle damage report", "battleId", battles[i].ID.Hex(), "error", err)
 		}
 	}
+	return nil
+}
+
+// Backfill generates reports for ended battles that have no report rows yet,
+// recovering battles that aged out of the live reportable window.
+func (j *BattleDamage) Backfill(ctx context.Context) error {
+	inactive, err := j.Colls.Trackers.Battle.GetInactiveIDs(ctx)
+	if err != nil {
+		return err
+	}
+	reported, err := j.Colls.Processed.Reports.BattleDamageReport.BattleIDsWithReports(ctx)
+	if err != nil {
+		return err
+	}
+	have := make(map[bson.ObjectID]struct{}, len(reported))
+	for _, id := range reported {
+		have[id] = struct{}{}
+	}
+	missing := make([]bson.ObjectID, 0)
+	for _, id := range inactive {
+		if _, ok := have[id]; !ok {
+			missing = append(missing, id)
+		}
+	}
+	if len(missing) == 0 {
+		slog.Info("Battle damage backfill: nothing to do")
+		return nil
+	}
+
+	g, gctx := errgroup.WithContext(ctx)
+	g.SetLimit(j.workers)
+	for i := range missing {
+		battleID := missing[i]
+		g.Go(func() error {
+			if gctx.Err() != nil {
+				return gctx.Err()
+			}
+			err := j.processBattle(gctx, battleID)
+			if err != nil {
+				slog.Error("Failed battle damage backfill", "battleId", battleID.Hex(), "error", err)
+			}
+			return nil
+		})
+	}
+	err = g.Wait()
+	if err != nil {
+		return err
+	}
+	slog.Info("Battle damage backfill complete", "battles", len(missing))
 	return nil
 }
 
