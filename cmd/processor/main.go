@@ -62,6 +62,7 @@ func main() {
 		// Hourly/daily heavy reports.
 		reports.NewTaxFlow(colls, cfg.TaxFlowInterval, 5*time.Minute),
 		reports.NewFinance(colls, cfg.FinanceInterval, 10*time.Minute),
+		reports.NewMoneyFlow(colls, cfg.MoneyFlowInterval, 12*time.Minute),
 		reports.NewWealth(colls, cfg.WealthInterval, 15*time.Minute),
 	}
 

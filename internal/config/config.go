@@ -24,6 +24,7 @@ type Config struct {
 	DismantleInterval     time.Duration
 	TaxFlowInterval       time.Duration
 	FinanceInterval       time.Duration
+	MoneyFlowInterval     time.Duration
 	WealthInterval        time.Duration
 	WorkerPoolSize        int
 }
@@ -47,6 +48,7 @@ func Load() (Config, error) {
 		DismantleInterval:     getDuration("DISMANTLE_INTERVAL", 30*time.Minute),
 		TaxFlowInterval:       getDuration("TAX_FLOW_INTERVAL", time.Hour),
 		FinanceInterval:       getDuration("FINANCE_INTERVAL", time.Hour),
+		MoneyFlowInterval:     getDuration("MONEY_FLOW_INTERVAL", time.Hour),
 		WealthInterval:        getDuration("WEALTH_INTERVAL", time.Hour),
 		WorkerPoolSize:        getInt("WORKER_POOL_SIZE", 32),
 	}
