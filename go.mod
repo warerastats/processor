@@ -3,7 +3,7 @@ module github.com/warerastats/processor
 go 1.25.0
 
 require (
-	github.com/warerastats/models v0.0.0-20260608211550-e867525c2794
+	github.com/warerastats/models v0.0.0-20260609194954-7081db2d2f09
 	go.mongodb.org/mongo-driver/v2 v2.6.0
 	golang.org/x/sync v0.20.0
 )

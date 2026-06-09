@@ -117,7 +117,7 @@ type flowParty struct {
 	muID      *bson.ObjectID
 }
 
-func (j *MoneyFlow) party(userID bson.ObjectID, txCountry, txMu *bson.ObjectID, users map[bson.ObjectID]trackers.User) flowParty {
+func (j *MoneyFlow) party(userID bson.ObjectID, txCountry, txMu *bson.ObjectID, users map[bson.ObjectID]trackers.UserAttrs) flowParty {
 	out := flowParty{countryID: txCountry, muID: txMu}
 	u, ok := users[userID]
 	if !ok {
@@ -515,9 +515,9 @@ func (j *MoneyFlow) computeDay(ctx context.Context, d time.Time) error {
 	}
 
 	userIDs := collectUserIDs(markets, trades, wages)
-	usersByID := map[bson.ObjectID]trackers.User{}
+	usersByID := map[bson.ObjectID]trackers.UserAttrs{}
 	if len(userIDs) > 0 {
-		users, err := j.Colls.Trackers.User.GetMany(ctx, userIDs)
+		users, err := j.Colls.Trackers.User.GetManyAttrs(ctx, userIDs)
 		if err != nil {
 			return err
 		}
