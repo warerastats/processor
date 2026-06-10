@@ -137,6 +137,26 @@ func (j *Wealth) computeDay(ctx context.Context, d time.Time) error {
 		rows = append(rows, row)
 	}
 
+	// Alliances: group users by their country's alliance.
+	allianceMembers := map[bson.ObjectID][]bson.ObjectID{}
+	for i := range countries {
+		if countries[i].AllianceID == nil {
+			continue
+		}
+		members, err := j.Colls.Trackers.User.GetByCountry(ctx, countries[i].ID)
+		if err != nil {
+			return err
+		}
+		allianceMembers[*countries[i].AllianceID] = append(allianceMembers[*countries[i].AllianceID], members...)
+	}
+	for allianceID, members := range allianceMembers {
+		row, err := j.buildRow(ctx, "alliance", allianceID, d, members, wages)
+		if err != nil {
+			return err
+		}
+		rows = append(rows, row)
+	}
+
 	err = j.Colls.Processed.Reports.EntityWealthReport.Upsert(ctx, rows)
 	if err != nil {
 		return err

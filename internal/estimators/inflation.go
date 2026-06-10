@@ -33,6 +33,8 @@ var inflationWeights = map[string]float64{
 	"heavyAmmo":  1.0,
 	"case1":      0.4,
 	"case2":      0.4,
+	"wood":       0.6,
+	"paper":      0.8,
 }
 
 // wageInflationWeight blends the day's weighted wage rate into the index to

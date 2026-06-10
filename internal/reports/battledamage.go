@@ -160,6 +160,9 @@ func (j *BattleDamage) processBattle(ctx context.Context, battleID bson.ObjectID
 		}
 		add("user", d.UserID)
 		add("country", d.CountryID)
+		if d.AllianceID != nil {
+			add("alliance", *d.AllianceID)
+		}
 		if d.MuID != nil {
 			add("mu", *d.MuID)
 		}
@@ -168,10 +171,30 @@ func (j *BattleDamage) processBattle(ctx context.Context, battleID bson.ObjectID
 		}
 	}
 
+	// Add per-side total rows (entityType="side", entityId=zero ObjectID).
+	var zeroID bson.ObjectID
+	for sk, total := range sideTotals {
+		ek := entityKey{sk.interval, sk.side, "side", zeroID}
+		entityDamage[ek] += total
+		// Side-level rows don't carry equipment; leave entityEquip empty.
+	}
+
+	// Compute the interval grand total (both sides) for side-level damagePct.
+	type intervalKey = time.Time
+	intervalTotals := map[intervalKey]int64{}
+	for sk, total := range sideTotals {
+		intervalTotals[sk.interval] += total
+	}
+
 	rows := make([]reports.BattleDamageReport, 0, len(entityDamage))
 	for ek, dmg := range entityDamage {
-		total := sideTotals[sideKey{ek.interval, ek.side}]
-		pct := 0.0
+		var total int64
+		var pct float64
+		if ek.kind == "side" {
+			total = intervalTotals[ek.interval]
+		} else {
+			total = sideTotals[sideKey{ek.interval, ek.side}]
+		}
 		if total > 0 {
 			pct = float64(dmg) / float64(total) * 100
 		}
