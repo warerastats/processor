@@ -6,7 +6,6 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
-	"runtime"
 	"runtime/debug"
 	"syscall"
 	"time"
@@ -43,28 +42,6 @@ func main() {
 	go func() {
 		<-ctx.Done()
 		slog.Warn("Processor shutdown signal received", "reason", ctx.Err())
-	}()
-
-	go func() {
-		ticker := time.NewTicker(60 * time.Second)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case t := <-ticker.C:
-				var m runtime.MemStats
-				runtime.ReadMemStats(&m)
-				slog.Info(
-					"Processor heartbeat",
-					"at", t.UTC(),
-					"goroutines", runtime.NumGoroutine(),
-					"heapAllocMB", bytesToMB(m.HeapAlloc),
-					"heapInuseMB", bytesToMB(m.HeapInuse),
-					"sysMB", bytesToMB(m.Sys),
-				)
-			}
-		}
 	}()
 
 	slog.Info("Processor starting")
