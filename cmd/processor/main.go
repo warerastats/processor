@@ -30,9 +30,31 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM, syscall.SIGQUIT)
+	defer signal.Stop(sigCh)
+
+	go func() {
+		sig := <-sigCh
+		slog.Warn("Processor OS signal received", "signal", sig.String())
+	}()
+
 	go func() {
 		<-ctx.Done()
 		slog.Warn("Processor shutdown signal received", "reason", ctx.Err())
+	}()
+
+	go func() {
+		ticker := time.NewTicker(60 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case t := <-ticker.C:
+				slog.Info("Processor heartbeat", "at", t.UTC())
+			}
+		}
 	}()
 
 	slog.Info("Processor starting")
