@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"runtime/debug"
 	"syscall"
 	"time"
 
@@ -19,8 +20,20 @@ import (
 )
 
 func main() {
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("Processor panicked", "panic", r, "stack", string(debug.Stack()))
+			os.Exit(2)
+		}
+	}()
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	go func() {
+		<-ctx.Done()
+		slog.Warn("Processor shutdown signal received", "reason", ctx.Err())
+	}()
 
 	slog.Info("Processor starting")
 
