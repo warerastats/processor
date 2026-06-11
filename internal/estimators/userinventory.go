@@ -7,6 +7,7 @@ import (
 
 	"github.com/warerastats/models/models"
 	"github.com/warerastats/models/models/stores/processed/estimators"
+	"github.com/warerastats/models/models/stores/trackers"
 	"go.mongodb.org/mongo-driver/v2/bson"
 )
 
@@ -28,35 +29,54 @@ func (j *UserInventory) Offset() time.Duration   { return j.offset }
 
 // Run rebuilds each user's current inventory from non-destroyed items.
 func (j *UserInventory) Run(ctx context.Context) error {
-	counts, err := j.Colls.Trackers.Item.AggregateActiveInventory(ctx)
+	now := time.Now().UTC()
+	var (
+		curUser  bson.ObjectID
+		curItems map[string]int
+		users    int
+	)
+
+	flush := func() error {
+		if curItems == nil {
+			return nil
+		}
+		err := j.Colls.Processed.Estimators.UserInventory.Upsert(ctx, estimators.UserInventory{
+			UserID:    curUser,
+			Items:     curItems,
+			UpdatedAt: now,
+		})
+		if err != nil {
+			slog.Error("Failed upserting user inventory", "userId", curUser.Hex(), "error", err)
+		}
+		return nil
+	}
+
+	// Rows arrive sorted by owner, so a new owner id closes the prior user's
+	// inventory; only one user's counts are held in memory at a time.
+	err := j.Colls.Trackers.Item.StreamActiveInventory(ctx, func(c trackers.InventoryCount) error {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if curItems == nil || c.Key.OwnerUserID != curUser {
+			err := flush()
+			if err != nil {
+				return err
+			}
+			curUser = c.Key.OwnerUserID
+			curItems = make(map[string]int)
+			users++
+		}
+		curItems[c.Key.ItemCode] += c.Count
+		return nil
+	})
 	if err != nil {
 		return err
 	}
 
-	byUser := make(map[bson.ObjectID]map[string]int)
-	for _, c := range counts {
-		m := byUser[c.Key.OwnerUserID]
-		if m == nil {
-			m = make(map[string]int)
-			byUser[c.Key.OwnerUserID] = m
-		}
-		m[c.Key.ItemCode] += c.Count
+	err = flush()
+	if err != nil {
+		return err
 	}
-
-	now := time.Now().UTC()
-	for userID, items := range byUser {
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-		err = j.Colls.Processed.Estimators.UserInventory.Upsert(ctx, estimators.UserInventory{
-			UserID:    userID,
-			Items:     items,
-			UpdatedAt: now,
-		})
-		if err != nil {
-			slog.Error("Failed upserting user inventory", "userId", userID.Hex(), "error", err)
-		}
-	}
-	slog.Info("User inventory rebuilt", "users", len(byUser))
+	slog.Info("User inventory rebuilt", "users", users)
 	return nil
 }

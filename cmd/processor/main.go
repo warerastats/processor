@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"runtime"
 	"runtime/debug"
 	"syscall"
 	"time"
@@ -52,7 +53,16 @@ func main() {
 			case <-ctx.Done():
 				return
 			case t := <-ticker.C:
-				slog.Info("Processor heartbeat", "at", t.UTC())
+				var m runtime.MemStats
+				runtime.ReadMemStats(&m)
+				slog.Info(
+					"Processor heartbeat",
+					"at", t.UTC(),
+					"goroutines", runtime.NumGoroutine(),
+					"heapAllocMB", bytesToMB(m.HeapAlloc),
+					"heapInuseMB", bytesToMB(m.HeapInuse),
+					"sysMB", bytesToMB(m.Sys),
+				)
 			}
 		}
 	}()
@@ -123,4 +133,9 @@ func main() {
 		os.Exit(1)
 	}
 	slog.Info("Processor stopped")
+}
+
+func bytesToMB(v uint64) float64 {
+	const mb = 1024 * 1024
+	return float64(v) / mb
 }
