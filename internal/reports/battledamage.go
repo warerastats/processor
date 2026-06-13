@@ -189,11 +189,23 @@ func (j *BattleDamage) processBattle(ctx context.Context, battleID bson.ObjectID
 	}
 
 	// Add per-side total rows (entityType="side", entityId=zero ObjectID).
+	// Aggregate equipment from every entity in the same (interval, side) bucket.
 	var zeroID bson.ObjectID
 	for sk, total := range sideTotals {
 		ek := entityKey{sk.interval, sk.side, "side", zeroID}
 		entityDamage[ek] += total
-		// Side-level rows don't carry equipment; leave entityEquip empty.
+
+		sideEquip := map[string]float64{}
+		for eek, counts := range entityEquip {
+			if eek.interval == sk.interval && eek.side == sk.side && eek.kind == "user" {
+				for code, n := range counts {
+					sideEquip[code] += n
+				}
+			}
+		}
+		if len(sideEquip) > 0 {
+			entityEquip[ek] = sideEquip
+		}
 	}
 
 	// Compute the interval grand total (both sides) for side-level damagePct.
