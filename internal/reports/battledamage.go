@@ -51,8 +51,9 @@ func (j *BattleDamage) Run(ctx context.Context) error {
 	return nil
 }
 
-// Backfill generates reports for ended battles that have no report rows yet,
-// recovering battles that aged out of the live reportable window.
+// Backfill generates reports for ended battles that have no report rows yet
+// and reprocesses battles that are missing side-level rows (e.g. battles
+// processed before the side aggregation was added).
 func (j *BattleDamage) Backfill(ctx context.Context) error {
 	inactive, err := j.Colls.Trackers.Battle.GetInactiveIDs(ctx)
 	if err != nil {
@@ -72,6 +73,22 @@ func (j *BattleDamage) Backfill(ctx context.Context) error {
 			missing = append(missing, id)
 		}
 	}
+
+	// Also find battles that have report rows but are missing side-level rows.
+	missingSide, err := j.Colls.Processed.Reports.BattleDamageReport.BattleIDsMissingSideRows(ctx)
+	if err != nil {
+		return err
+	}
+	if len(missingSide) > 0 {
+		// Deduplicate against the missing set.
+		for _, id := range missingSide {
+			if _, ok := have[id]; ok {
+				missing = append(missing, id)
+			}
+		}
+		slog.Info("Battle damage backfill: reprocessing battles missing side rows", "count", len(missingSide))
+	}
+
 	if len(missing) == 0 {
 		slog.Info("Battle damage backfill: nothing to do")
 		return nil
