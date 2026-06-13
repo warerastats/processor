@@ -115,6 +115,7 @@ func (j *MoneyFlow) earliestTime(ctx context.Context) (time.Time, bool, error) {
 type flowParty struct {
 	countryID *bson.ObjectID
 	muID      *bson.ObjectID
+	partyID   *bson.ObjectID
 }
 
 func (j *MoneyFlow) party(userID bson.ObjectID, txCountry, txMu *bson.ObjectID, users map[bson.ObjectID]trackers.UserAttrs) flowParty {
@@ -130,6 +131,10 @@ func (j *MoneyFlow) party(userID bson.ObjectID, txCountry, txMu *bson.ObjectID, 
 	if out.muID == nil && u.MuID != nil && !u.MuID.IsZero() {
 		muID := *u.MuID
 		out.muID = &muID
+	}
+	if u.PartyID != nil && !u.PartyID.IsZero() {
+		partyID := *u.PartyID
+		out.partyID = &partyID
 	}
 	return out
 }
@@ -528,6 +533,7 @@ func (j *MoneyFlow) computeDay(ctx context.Context, d time.Time) error {
 
 	countryAcc := map[bson.ObjectID]*countryAccum{}
 	muAcc := map[bson.ObjectID]*muAccum{}
+	partyAcc := map[bson.ObjectID]*partyAccum{}
 
 	// Build country → alliance map for alliance money-flow attribution.
 	countries, err := j.Colls.Trackers.Country.GetAll(ctx)
@@ -564,6 +570,8 @@ func (j *MoneyFlow) computeDay(ctx context.Context, d time.Time) error {
 		applyAllianceFlow(allianceAcc, d, flowEquipment, tx.Money, srcA, dstA)
 		applyMuAllianceOut(muAllianceAcc, d, flowEquipment, tx.Money, source, srcA, dstA)
 		applyMuAllianceIn(muAllianceAcc, d, flowEquipment, tx.Money, target, srcA, dstA)
+		applyPartyOut(partyAcc, d, flowEquipment, tx.Money, source, target, allianceByCountry)
+		applyPartyIn(partyAcc, d, flowEquipment, tx.Money, target, source, allianceByCountry)
 	}
 
 	for _, tx := range trades {
@@ -577,6 +585,8 @@ func (j *MoneyFlow) computeDay(ctx context.Context, d time.Time) error {
 		applyAllianceFlow(allianceAcc, d, flowItems, tx.Money, srcA, dstA)
 		applyMuAllianceOut(muAllianceAcc, d, flowItems, tx.Money, source, srcA, dstA)
 		applyMuAllianceIn(muAllianceAcc, d, flowItems, tx.Money, target, srcA, dstA)
+		applyPartyOut(partyAcc, d, flowItems, tx.Money, source, target, allianceByCountry)
+		applyPartyIn(partyAcc, d, flowItems, tx.Money, target, source, allianceByCountry)
 	}
 
 	for _, tx := range wages {
@@ -590,6 +600,8 @@ func (j *MoneyFlow) computeDay(ctx context.Context, d time.Time) error {
 		applyAllianceFlow(allianceAcc, d, flowWages, tx.Money, srcA, dstA)
 		applyMuAllianceOut(muAllianceAcc, d, flowWages, tx.Money, source, srcA, dstA)
 		applyMuAllianceIn(muAllianceAcc, d, flowWages, tx.Money, target, srcA, dstA)
+		applyPartyOut(partyAcc, d, flowWages, tx.Money, source, target, allianceByCountry)
+		applyPartyIn(partyAcc, d, flowWages, tx.Money, target, source, allianceByCountry)
 	}
 
 	countryRows := make([]processedreports.CountryMoneyFlowReport, 0, len(countryAcc))
@@ -660,7 +672,21 @@ func (j *MoneyFlow) computeDay(ctx context.Context, d time.Time) error {
 		return err
 	}
 
+	// Party money-flow reports.
+	pRows := make([]processedreports.PartyMoneyFlowReport, 0, len(partyAcc))
+	for _, a := range partyAcc {
+		a.row.Counterparts = make([]processedreports.PartyMoneyFlowCounterpart, 0, len(a.counterparts))
+		for _, cp := range a.counterparts {
+			a.row.Counterparts = append(a.row.Counterparts, *cp)
+		}
+		pRows = append(pRows, *a.row)
+	}
+	err = j.Colls.Processed.Reports.PartyMoneyFlow.Upsert(ctx, pRows)
+	if err != nil {
+		return err
+	}
+
 	slog.Info("Money flow reports", "day", d, "countries", len(countryRows), "mus", len(muRows),
-		"countryAlliance", len(caRows), "alliances", len(aRows), "muAlliance", len(maRows))
+		"countryAlliance", len(caRows), "alliances", len(aRows), "muAlliance", len(maRows), "parties", len(pRows))
 	return nil
 }
