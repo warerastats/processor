@@ -14,9 +14,9 @@ import (
 
 const taxFlowName = "country_tax_flow"
 
-// hijackMaxFraction is the share of income tax the initial country seizes at
-// full resistance on a non-core region.
-const hijackMaxFraction = 0.4
+// foreignTaxFraction is the share of income tax redirected to a foreign
+// worker's citizenship country (30% of gross income tax).
+const foreignTaxFraction = 0.30
 
 // TaxFlow computes hourly per-country income-tax flow reports.
 type TaxFlow struct {
@@ -81,11 +81,12 @@ func (j *TaxFlow) Run(ctx context.Context) error {
 
 // taxRefs holds the slowly-changing lookups used across hours in one pass.
 type taxRefs struct {
-	regions   map[bson.ObjectID]trackers.Region
-	countries map[bson.ObjectID]trackers.Country
-	companies map[bson.ObjectID]trackers.Company
-	employee  map[bson.ObjectID]*trackers.Employee
-	ownerCtry map[bson.ObjectID]bson.ObjectID
+	regions    map[bson.ObjectID]trackers.Region
+	countries  map[bson.ObjectID]trackers.Country
+	companies  map[bson.ObjectID]trackers.Company
+	employee   map[bson.ObjectID]*trackers.Employee
+	ownerCtry  map[bson.ObjectID]bson.ObjectID
+	workerCtry map[bson.ObjectID]bson.ObjectID // employee userID → citizenship countryID
 }
 
 // loadRefs batch-loads regions, countries, and companies for the pass.
@@ -104,11 +105,12 @@ func (j *TaxFlow) loadRefs(ctx context.Context) (*taxRefs, error) {
 	}
 
 	refs := &taxRefs{
-		regions:   make(map[bson.ObjectID]trackers.Region, len(regions)),
-		countries: make(map[bson.ObjectID]trackers.Country, len(countries)),
-		companies: make(map[bson.ObjectID]trackers.Company, len(companies)),
-		employee:  map[bson.ObjectID]*trackers.Employee{},
-		ownerCtry: map[bson.ObjectID]bson.ObjectID{},
+		regions:    make(map[bson.ObjectID]trackers.Region, len(regions)),
+		countries:  make(map[bson.ObjectID]trackers.Country, len(countries)),
+		companies:  make(map[bson.ObjectID]trackers.Company, len(companies)),
+		employee:   map[bson.ObjectID]*trackers.Employee{},
+		ownerCtry:  map[bson.ObjectID]bson.ObjectID{},
+		workerCtry: map[bson.ObjectID]bson.ObjectID{},
 	}
 	for i := range regions {
 		refs.regions[regions[i].ID] = regions[i]
@@ -124,18 +126,18 @@ func (j *TaxFlow) loadRefs(ctx context.Context) (*taxRefs, error) {
 
 // taxAccum accumulates one country's hourly tax flow during a pass.
 type taxAccum struct {
-	core      float64
-	nonCore   float64
-	hijackOut float64
-	hijackIn  float64
-	hijackers map[bson.ObjectID]float64
-	sources   map[bson.ObjectID]*sourceAccum
+	core                 float64
+	nonCore              float64
+	foreignTaxOut        float64
+	foreignTaxIn         float64
+	foreignTaxRecipients map[bson.ObjectID]float64 // citizenship countryID → amount redirected
+	sources              map[bson.ObjectID]*sourceAccum
 }
 
 type sourceAccum struct {
-	total    float64
-	hijacked float64
-	core     float64
+	total                float64
+	core                 float64
+	foreignTaxRedirected float64
 }
 
 // computeHour builds and stores tax-flow reports for the hour starting at h.
@@ -152,7 +154,7 @@ func (j *TaxFlow) computeHour(ctx context.Context, h time.Time, refs *taxRefs) e
 	get := func(id bson.ObjectID) *taxAccum {
 		a := acc[id]
 		if a == nil {
-			a = &taxAccum{hijackers: map[bson.ObjectID]float64{}, sources: map[bson.ObjectID]*sourceAccum{}}
+			a = &taxAccum{foreignTaxRecipients: map[bson.ObjectID]float64{}, sources: map[bson.ObjectID]*sourceAccum{}}
 			acc[id] = a
 		}
 		return a
@@ -171,7 +173,8 @@ func (j *TaxFlow) computeHour(ctx context.Context, h time.Time, refs *taxRefs) e
 		if !ok {
 			continue
 		}
-		taxing, ok := refs.countries[region.CountryID]
+		workCountryID := region.CountryID
+		taxing, ok := refs.countries[workCountryID]
 		if !ok {
 			continue
 		}
@@ -181,23 +184,27 @@ func (j *TaxFlow) computeHour(ctx context.Context, h time.Time, refs *taxRefs) e
 		if gross <= 0 {
 			continue
 		}
-		isCore := region.CountryID == region.InitialCountryID
-		hijacked := 0.0
-		if !isCore && region.MaxResistance > 0 {
-			hijacked = gross * hijackMaxFraction * (region.Resistance / region.MaxResistance)
-		}
-		kept := gross - hijacked
 
-		c := get(region.CountryID)
+		// Foreign-citizen income tax: 30% of gross goes to the worker's
+		// citizenship country when it differs from the work country.
+		citizenshipID := j.workerCountry(ctx, refs, emp.UserID)
+		redirected := 0.0
+		if !citizenshipID.IsZero() && citizenshipID != workCountryID {
+			redirected = gross * foreignTaxFraction
+		}
+		kept := gross - redirected
+
+		isCore := workCountryID == region.InitialCountryID
+		c := get(workCountryID)
 		if isCore {
 			c.core += kept
 		} else {
 			c.nonCore += kept
 		}
-		if hijacked > 0 {
-			c.hijackOut += hijacked
-			c.hijackers[region.InitialCountryID] += hijacked
-			get(region.InitialCountryID).hijackIn += hijacked
+		if redirected > 0 {
+			c.foreignTaxOut += redirected
+			c.foreignTaxRecipients[citizenshipID] += redirected
+			get(citizenshipID).foreignTaxIn += redirected
 		}
 
 		home := j.ownerCountry(ctx, refs, company.UserID)
@@ -207,7 +214,7 @@ func (j *TaxFlow) computeHour(ctx context.Context, h time.Time, refs *taxRefs) e
 			c.sources[home] = src
 		}
 		src.total += gross
-		src.hijacked += hijacked
+		src.foreignTaxRedirected += redirected
 		if isCore {
 			src.core += gross
 		}
@@ -227,9 +234,9 @@ func (j *TaxFlow) computeHour(ctx context.Context, h time.Time, refs *taxRefs) e
 
 // buildTaxRow converts an accumulator into a stored tax-flow document.
 func buildTaxRow(id bson.ObjectID, h time.Time, a *taxAccum) reports.CountryTaxFlow {
-	hijackers := make([]reports.TaxHijack, 0, len(a.hijackers))
-	for cid, amt := range a.hijackers {
-		hijackers = append(hijackers, reports.TaxHijack{CountryID: cid, Amount: amt})
+	foreignRecipients := make([]reports.ForeignTaxRecipient, 0, len(a.foreignTaxRecipients))
+	for cid, amt := range a.foreignTaxRecipients {
+		foreignRecipients = append(foreignRecipients, reports.ForeignTaxRecipient{CountryID: cid, Amount: amt})
 	}
 	sources := make([]reports.TaxSource, 0, len(a.sources))
 	for cid, s := range a.sources {
@@ -238,20 +245,21 @@ func buildTaxRow(id bson.ObjectID, h time.Time, a *taxAccum) reports.CountryTaxF
 			corePct = s.core / s.total * 100
 		}
 		sources = append(sources, reports.TaxSource{
-			CountryID: cid, Total: s.total, Hijacked: s.hijacked, CorePct: corePct,
+			CountryID: cid, Total: s.total, CorePct: corePct,
+			ForeignTaxRedirected: s.foreignTaxRedirected,
 		})
 	}
 	return reports.CountryTaxFlow{
-		ID:            reports.CountryTaxFlowID(id, h),
-		CountryID:     id,
-		HourStart:     h,
-		TotalTax:      a.core + a.nonCore + a.hijackIn,
-		HijackedIn:    a.hijackIn,
-		CoreEarned:    a.core,
-		NonCoreEarned: a.nonCore,
-		HijackedOut:   a.hijackOut,
-		Hijackers:     hijackers,
-		Sources:       sources,
+		ID:                   reports.CountryTaxFlowID(id, h),
+		CountryID:            id,
+		HourStart:            h,
+		TotalTax:             a.core + a.nonCore + a.foreignTaxIn,
+		CoreEarned:           a.core,
+		NonCoreEarned:        a.nonCore,
+		ForeignTaxIn:         a.foreignTaxIn,
+		ForeignTaxOut:        a.foreignTaxOut,
+		ForeignTaxRecipients: foreignRecipients,
+		Sources:              sources,
 	}
 }
 
@@ -280,5 +288,19 @@ func (j *TaxFlow) ownerCountry(ctx context.Context, refs *taxRefs, ownerID bson.
 		c = users[0].CountryID
 	}
 	refs.ownerCtry[ownerID] = c
+	return c
+}
+
+// workerCountry resolves and caches an employee's citizenship country id.
+func (j *TaxFlow) workerCountry(ctx context.Context, refs *taxRefs, userID bson.ObjectID) bson.ObjectID {
+	if c, ok := refs.workerCtry[userID]; ok {
+		return c
+	}
+	users, err := j.Colls.Trackers.User.GetMany(ctx, []bson.ObjectID{userID})
+	var c bson.ObjectID
+	if err == nil && len(users) > 0 {
+		c = users[0].CountryID
+	}
+	refs.workerCtry[userID] = c
 	return c
 }
