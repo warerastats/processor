@@ -167,6 +167,7 @@ func (j *Wealth) computeDay(ctx context.Context, d time.Time) error {
 
 // buildRow rolls up member wealth, damage, and wages for one entity.
 func (j *Wealth) buildRow(ctx context.Context, kind string, id bson.ObjectID, d time.Time, members []bson.ObjectID, wages map[bson.ObjectID]wagePair) (reports.EntityWealthReport, error) {
+	day := 24 * time.Hour
 	row := reports.EntityWealthReport{
 		ID:          reports.EntityWealthReportID(kind, id, d),
 		EntityType:  kind,
@@ -192,7 +193,7 @@ func (j *Wealth) buildRow(ctx context.Context, kind string, id bson.ObjectID, d 
 		row.WagesEarned += wages[m].earned
 	}
 
-	damage, err := j.Colls.Processed.Estimators.BattleParticipation.SumDamageForUsers(ctx, members)
+	damage, err := j.Colls.Processed.Reports.BattleDamageReport.SumDamageByEntity(ctx, kind, id, d, d.Add(day))
 	if err != nil {
 		return row, err
 	}
